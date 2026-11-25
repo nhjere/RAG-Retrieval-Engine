@@ -13,7 +13,7 @@ func Dot(a, b []float32) float32 {
 // scores one query against a group of passage vectors and keeps the best matches
 func ScanBlock(query []float32, vecs []float32, ids []int, dim int, top *TopK) {
 	// iterate through each vector id
-	for j := 0; j < len(ids)-1; j++ {
+	for j := 0; j < len(ids); j++ {
 		// single out vector from block
 		v := vecs[dim*j : dim*(j+1)]
 		// calculate score

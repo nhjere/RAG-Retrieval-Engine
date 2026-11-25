@@ -34,7 +34,7 @@ func (h MinHeap) Len() int {
 
 // return true if element i < j
 func (h MinHeap) Less(i, j int) bool {
-	return h[i].Score < h[j].Score
+	return worse(h[i], h[j])
 }
 
 // swaps elements  at i and j in heap
