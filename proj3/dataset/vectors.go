@@ -20,13 +20,13 @@ func (v *Vectors) Row(i int) []float32 {
 	return v.Data[i*v.Dim : (i+1)*v.Dim]
 }
 
-// LoadFbin reads binary vector files: [int32 N][int32 Dim][N*Dim float32 values]
+// LoadFbin reads a vector file from disk into one large block of memory
 func LoadFbin(path string) (*Vectors, error) {
 
 	// open files
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("Error opening file")
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 
 	// close on return
@@ -50,6 +50,7 @@ func LoadFbin(path string) (*Vectors, error) {
 		return nil, err
 	}
 
+	// catches float64 data or a truncated file.
 	want := int64(8) + int64(n)*int64(dim)*4
 	if info.Size() != want {
 		return nil, fmt.Errorf("%s: size %d, want %d (float64 data or truncated?)",
