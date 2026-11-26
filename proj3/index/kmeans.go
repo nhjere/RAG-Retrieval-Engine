@@ -54,7 +54,7 @@ func sample(vecs *dataset.Vectors, n int, rng *rand.Rand) *dataset.Vectors {
 	// random order of all indices
 	order := rng.Perm(vecs.N)
 	data := make([]float32, n*vecs.Dim)
-	for i := 0; i < vecs.N; i++ {
+	for i := 0; i < n; i++ {
 		copy(data[i*vecs.Dim:(i+1)*vecs.Dim], vecs.Row(order[i]))
 	}
 	return &dataset.Vectors{Data: data, N: n, Dim: vecs.Dim}
