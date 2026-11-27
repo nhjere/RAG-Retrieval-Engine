@@ -6,12 +6,19 @@ import (
 	"proj3-redesigned/index"
 	"proj3-redesigned/search"
 	"sync"
+	"time"
 )
 
 //	Basic Parallel Implementation - Map Reduce
-//
+
 // runs IVF search with threads goroutines
 func MapReduce(idx *index.IVF, queries *dataset.Vectors, k, nprobe, threads int) [][]search.Result {
+	results, _ := MapReduceTimed(idx, queries, k, nprobe, threads)
+	return results
+}
+
+// same as MapReduce, also returns each thread's time between the two barriers
+func MapReduceTimed(idx *index.IVF, queries *dataset.Vectors, k, nprobe, threads int) ([][]search.Result, []time.Duration) {
 
 	nlist := idx.Centroids.N
 
@@ -26,6 +33,9 @@ func MapReduce(idx *index.IVF, queries *dataset.Vectors, k, nprobe, threads int)
 
 	// final results after scores merge
 	results := make([][]search.Result, queries.N)
+
+	// each thread's build + map time
+	mapTime := make([]time.Duration, threads)
 
 	// define barriers (2) - one after assignments, one after scanning
 	bar := concurrent.NewBarrier(threads)
@@ -45,6 +55,7 @@ func MapReduce(idx *index.IVF, queries *dataset.Vectors, k, nprobe, threads int)
 
 			// r1: every thread waits until all goRoutine's have probed their queries
 			bar.Wait()
+			mapStart := time.Now()
 
 			// build: which queries probed each of my clusters
 			byCluster := make([][]int, nlist)
@@ -66,6 +77,7 @@ func MapReduce(idx *index.IVF, queries *dataset.Vectors, k, nprobe, threads int)
 					search.ScanBlock(queries.Row(q), vecs, ids, idx.Dim, partial[t][q])
 				}
 			}
+			mapTime[t] = time.Since(mapStart)
 
 			// r2: every thread waits until all goRoutine's have scanned theur queries
 			bar.Wait()
@@ -87,7 +99,7 @@ func MapReduce(idx *index.IVF, queries *dataset.Vectors, k, nprobe, threads int)
 	}
 
 	wg.Wait()
-	return results
+	return results, mapTime
 
 }
 

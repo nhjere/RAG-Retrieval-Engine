@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
@@ -20,8 +18,9 @@ import (
 const usage = `usage: search -data DIR -mode MODE [options]
 
 modes:
-  brute   exact search over every passage; saves DIR/groundtruth.bin (run once per dataset)
-  seq     IVF search on one thread; prints recall if groundtruth.bin exists
+  brute      exact search over every passage; saves DIR/groundtruth.bin (run once per dataset)
+  seq        IVF search on one thread; prints recall if groundtruth.bin exists
+  mapreduce  IVF search with -threads goroutines (map-reduce with barriers)
 
 options:
 `
@@ -30,16 +29,18 @@ func main() {
 
 	// read command line flags
 	dataDir := flag.String("data", "data/small", "dataset folder")
-	mode := flag.String("mode", "seq", "brute or seq")
+	mode := flag.String("mode", "seq", "brute, seq, or mapreduce")
 	k := flag.Int("k", 10, "results per query")
 	nq := flag.Int("nq", 0, "number of queries to run (0 = all)")
 	nlist := flag.Int("nlist", 0, "number of clusters (0 = sqrt of passage count)")
 	nprobe := flag.Int("nprobe", 10, "clusters searched per query")
+	threads := flag.Int("threads", 4, "goroutines for parallel modes")
 	iters := flag.Int("iters", 10, "k-means rounds")
 	sampleSize := flag.Int("sample", 0, "k-means training sample (0 = 64 x nlist)")
 	seed := flag.Int64("seed", 42, "random seed for k-means")
 	show := flag.Int("show", 0, "queries to print results for")
 	stats := flag.Bool("stats", false, "print cluster size stats")
+	timing := flag.Bool("timing", false, "print per-thread map time (mapreduce)")
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, usage)
 		flag.PrintDefaults()
@@ -47,7 +48,7 @@ func main() {
 	flag.Parse()
 
 	// reject a bad mode before spending time loading data
-	if *mode != "brute" && *mode != "seq" {
+	if *mode != "brute" && *mode != "seq" && *mode != "mapreduce" {
 		fmt.Fprintf(os.Stderr, "unknown mode %q\n\n", *mode)
 		flag.Usage()
 		os.Exit(2)
@@ -57,6 +58,7 @@ func main() {
 	gtPath := filepath.Join(*dataDir, "groundtruth.bin")
 
 	var results [][]search.Result
+	var mapTime []time.Duration
 	switch *mode {
 	case "brute":
 		start := time.Now()
@@ -68,14 +70,22 @@ func main() {
 		}
 		fmt.Printf("saved answer key to %s\n", gtPath)
 
-	case "seq":
+	case "seq", "mapreduce":
 		idx := buildIndex(passages, *nlist, *iters, *sampleSize, *seed, *stats)
 		start := time.Now()
-		results = schedule.Sequential(idx, queries, *k, *nprobe)
+		if *mode == "seq" {
+			results = schedule.Sequential(idx, queries, *k, *nprobe)
+		} else {
+			results, mapTime = schedule.MapReduceTimed(idx, queries, *k, *nprobe, *threads)
+		}
 		elapsed := time.Since(start)
-		fmt.Printf("mode=%s queries=%d k=%d nprobe=%d\n", *mode, queries.N, *k, *nprobe)
+		fmt.Printf("mode=%s threads=%d queries=%d k=%d nprobe=%d\n",
+			*mode, threadCount(*mode, *threads), queries.N, *k, *nprobe)
 		fmt.Printf("search %.3fs\n", elapsed.Seconds())
 		printRecall(gtPath, results, *k)
+		if *timing && mapTime != nil {
+			printImbalance(mapTime)
+		}
 	}
 
 	if *show > 0 {
@@ -146,11 +156,11 @@ func printRecall(gtPath string, results [][]search.Result, k int) {
 
 // printResults shows the text of the first few queries and their matches
 func printResults(dataDir string, results [][]search.Result, show int) {
-	queryTexts, err := loadTexts(filepath.Join(dataDir, "queries.jsonl"))
+	queryTexts, err := dataset.LoadTexts(filepath.Join(dataDir, "queries.jsonl"))
 	if err != nil {
 		fail(err)
 	}
-	passageTexts, err := loadTexts(filepath.Join(dataDir, "passages.jsonl"))
+	passageTexts, err := dataset.LoadTexts(filepath.Join(dataDir, "passages.jsonl"))
 	if err != nil {
 		fail(err)
 	}
@@ -163,28 +173,29 @@ func printResults(dataDir string, results [][]search.Result, show int) {
 	}
 }
 
-func loadTexts(path string) ([]string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
+// printImbalance summarizes how unevenly the map work was spread across threads
+func printImbalance(mapTime []time.Duration) {
+	minT, maxT, sum := mapTime[0], mapTime[0], time.Duration(0)
+	for _, d := range mapTime {
+		if d < minT {
+			minT = d
+		}
+		if d > maxT {
+			maxT = d
+		}
+		sum += d
 	}
-	defer file.Close()
+	avg := sum / time.Duration(len(mapTime))
+	fmt.Printf("map time per thread: min %.3fs avg %.3fs max %.3fs (max/avg = %.2f)\n",
+		minT.Seconds(), avg.Seconds(), maxT.Seconds(), maxT.Seconds()/avg.Seconds())
+}
 
-	var texts []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var record struct {
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			return nil, fmt.Errorf("decode %s: %w", path, err)
-		}
-		texts = append(texts, record.Text)
+// threadCount reports how many goroutines a mode actually uses
+func threadCount(mode string, threads int) int {
+	if mode == "seq" {
+		return 1
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return texts, nil
+	return threads
 }
 
 func fail(err error) {
